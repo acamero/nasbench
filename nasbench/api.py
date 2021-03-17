@@ -329,6 +329,35 @@ class NASBench(object):
 
     return data_point
 
+  def random_estimate(self, model_spec, model_dir):
+    """Estimates the performance of a model spec using stochastic random weight sampling.
+    This method was added by #TODO: add reference
+
+    By default, this uses TPUs for evaluation but
+    CPU/GPU can be used by setting --use_tpu=false (GPU will require installing
+    tensorflow-gpu).
+
+    Args:
+      model_spec: ModelSpec object.
+      model_dir: directory to store the checkpoints, summaries, and logs.
+
+    Returns:
+      dict contained the evaluated data for this object.
+    """
+    metadata = evaluate.random_estimate(model_spec, self.config, model_dir)
+    metadata_file = os.path.join(model_dir, 'metadata.json')
+    with tf.gfile.Open(metadata_file, 'w') as f:
+      json.dump(metadata, f, cls=_NumpyEncoder)
+
+    data_point = {}
+    data_point['module_adjacency'] = model_spec.matrix
+    data_point['module_operations'] = model_spec.ops
+    data_point['trainable_parameters'] = metadata['trainable_params']
+    data_point['prediction_time'] = metadata['prediction_time']
+    data_point['evaluation_results'] = metadata['evaluation_results']
+
+    return data_point
+
   def hash_iterator(self):
     """Returns iterator over all unique model hashes."""
     return self.fixed_statistics.keys()

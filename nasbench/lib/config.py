@@ -24,16 +24,16 @@ FLAGS = flags.FLAGS
 
 # Data flags (only required for generating the dataset)
 flags.DEFINE_list(
-    'train_data_files', [],
+    'train_data_files', ['data/train_1.tfrecords', 'data/train_2.tfrecords', 'data/train_3.tfrecords', 'data/train_4.tfrecords'],
     'Training data files in TFRecord format. Multiple files can be passed in a'
     ' comma-separated list. The first file in the list will be used for'
     ' computing the training error.')
 flags.DEFINE_string(
-    'valid_data_file', '', 'Validation data in TFRecord format.')
+    'valid_data_file', 'data/validation.tfrecords', 'Validation data in TFRecord format.')
 flags.DEFINE_string(
-    'test_data_file', '', 'Testing data in TFRecord format.')
+    'test_data_file', 'data/test.tfrecords', 'Testing data in TFRecord format.')
 flags.DEFINE_string(
-    'sample_data_file', '', 'Sampled batch data in TFRecord format.')
+    'sample_data_file', 'data/sample.tfrecords', 'Sampled batch data in TFRecord format.')
 flags.DEFINE_string(
     'data_format', 'channels_last',
     'Data format, one of [channels_last, channels_first] for NHWC and NCHW'
@@ -97,13 +97,21 @@ flags.DEFINE_integer(
 
 # TPU flags
 flags.DEFINE_bool(
-    'use_tpu', True, 'Use TPUs for train and evaluation.')
+    'use_tpu', False, 'Use TPUs for train and evaluation.')
+#    'use_tpu', True, 'Use TPUs for train and evaluation.')
 flags.DEFINE_integer(
     'tpu_iterations_per_loop', 100, 'Iterations per loop of TPU execution.')
 flags.DEFINE_integer(
     'tpu_num_shards', 2,
     'Number of TPU shards, a single TPU chip has 2 shards.')
 
+# Random sampling flags
+flags.DEFINE_integer(
+    'number_of_steps', 1,
+    'Number of batches used to evaluate the random sample.')
+flags.DEFINE_integer(
+    'max_samples', 200,
+    'Number of random samples taken to evaluate the performance.')
 
 def build_config():
   """Build config from flags defined in this module."""

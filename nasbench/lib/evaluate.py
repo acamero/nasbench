@@ -23,6 +23,7 @@ import time
 from nasbench.lib import cifar
 from nasbench.lib import model_builder
 from nasbench.lib import training_time
+from nasbench import api
 import numpy as np
 import tensorflow as tf
 
@@ -54,6 +55,11 @@ def train_and_evaluate(spec, config, model_dir):
     dict containing the evaluation metadata.
   """
   return _train_and_evaluate_impl(spec, config, model_dir)
+
+
+def random_estimate(spec, config, model_dir):
+  evaluator = _RandomEstimator(spec, config, model_dir)
+  return evaluator.run()
 
 
 def augment_and_evaluate(spec, config, model_dir, epochs_per_eval=5):
@@ -309,3 +315,193 @@ def _get_param_count(model_dir):
 
   return params
 
+
+def _random_normal(size,
+                   **kwargs):
+  loc = 0.0
+  scale = 1.0
+  if kwargs is not None:
+    if 'loc' in kwargs:
+      low = kwargs['loc']
+    if 'scale' in kwargs:
+      high = kwargs['scale']
+  return np.random.normal(loc=loc,
+                          scale=scale,
+                          size=size)
+
+
+class _RandomEstimator(object):
+  """Runs the stochastic random weight sampling."""
+
+  def __init__(self, spec, config, model_dir):
+    """Initialize evaluator. See train_and_evaluate docstring."""
+    self.input_train = cifar.CIFARInput('train', config)
+    self.input_train_eval = cifar.CIFARInput('train_eval', config)
+    self.input_valid = cifar.CIFARInput('valid', config)
+    self.input_test = cifar.CIFARInput('test', config)
+    self.input_sample = cifar.CIFARInput('sample', config)
+    self.estimator = _create_estimator(spec, config, model_dir,
+                                       self.input_train.num_images,
+                                       self.input_sample.num_images)
+
+    self.spec = spec
+    self.config = config
+    self.model_dir = model_dir
+    if self.config['max_samples'] > 30:
+      self.max_samples = self.config['max_samples']
+    else:
+      self.max_samples = 30
+
+    if self.config['number_of_steps'] > 0:
+      self.number_of_steps = self.config['number_of_steps']
+    else:
+      self.number_of_steps = 1
+
+  def run_1(self):
+    """Runs training and evaluation."""
+    attempts = 0
+    while True:
+      # Delete everything in the model dir at the start of each attempt
+      try:
+        tf.gfile.DeleteRecursively(self.model_dir)
+      except tf.errors.NotFoundError:
+        pass
+      tf.gfile.MakeDirs(self.model_dir)
+
+      try:
+        # Train for 1 step with 0 LR to initialize the weights, then evaluate
+        # once at the start for completeness, accuracies expected to be around
+        # random selection. Note that batch norm moving averages change during
+        # the step but the trainable weights do not.
+        self.estimator.train(
+            input_fn=self.input_train.input_fn,
+            max_steps=1)
+
+        # Random sampling        
+        evaluation_results = []
+        start_time = time.time()
+        tf.reset_default_graph()
+        checkpoint = tf.train.get_checkpoint_state(self.model_dir)
+        with tf.Session() as sess:
+          saver = tf.train.import_meta_graph(checkpoint.model_checkpoint_path + '.meta')
+          saver.restore(sess, checkpoint.model_checkpoint_path)
+          # get variables
+          variables_names = [v.name for v in tf.trainable_variables()]
+          variables = []
+          for k in variables_names:
+            variables = [var for var in tf.global_variables() if var.name in variables_names]
+
+          for samp in range(0, self.max_samples):
+            s1_time = time.time()
+            ops = []
+            for var in variables:
+              ops.append(var.assign(_random_normal(var.shape)))
+
+            sess.run(ops)
+            end1_time = time.time() - s1_time
+            s2_time = time.time()
+            results = self.estimator.evaluate(
+                input_fn=self.input_train.input_fn,
+                steps=self.number_of_steps,
+                name='train')
+            end2_time = time.time() - s2_time
+            results['init_weights'] = end1_time
+            results['evaluate'] = end2_time
+            evaluation_results.append(results)
+            print("##### ", samp, results)
+
+        all_time = time.time() - start_time
+        break     # Break from retry loop on success
+      except VALID_EXCEPTIONS as e:   # pylint: disable=catching-non-exception
+        attempts += 1
+        tf.logging.warning(str(e))
+        if attempts >= self.config['max_attempts']:
+          raise AbortError(str(e))
+
+    metadata = {
+        'trainable_params': _get_param_count(self.model_dir),
+        'prediction_time': all_time,   # includes eval and other metric time
+        'evaluation_results': evaluation_results,
+    }
+    return metadata
+
+  def _samp(self, checkpoint, range_samples):
+    evaluation_results = []
+    npEnc = api._NumpyEncoder()
+    with tf.Session() as sess:
+      saver = tf.train.import_meta_graph(checkpoint.model_checkpoint_path + '.meta')
+      saver.restore(sess, checkpoint.model_checkpoint_path)
+      # get variables
+      variables_names = [v.name for v in tf.trainable_variables()]
+      variables = []
+      for k in variables_names:
+        variables = [var for var in tf.global_variables() if var.name in variables_names]
+
+      for samp in range_samples:
+        s1_time = time.time()
+        ops = []
+        for var in variables:
+          ops.append(var.assign(_random_normal(var.shape)))
+
+        sess.run(ops)
+        end1_time = time.time() - s1_time
+        s2_time = time.time()
+        results = self.estimator.evaluate(
+            input_fn=self.input_train.input_fn,
+            steps=self.number_of_steps,
+            name='train')
+        for k in results.keys():
+            results[k] = npEnc.default(results[k])
+        end2_time = time.time() - s2_time
+        results['init_weights_time'] = end1_time
+        results['evaluate_time'] = end2_time
+        evaluation_results.append(results)
+        print("##### ", samp, results)
+
+    return evaluation_results
+
+  def run(self):
+    """Runs training and evaluation."""
+    attempts = 0
+    while True:
+      # Delete everything in the model dir at the start of each attempt
+      try:
+        tf.gfile.DeleteRecursively(self.model_dir)
+      except tf.errors.NotFoundError:
+        pass
+      tf.gfile.MakeDirs(self.model_dir)
+
+      try:
+        # Train for 1 step with 0 LR to initialize the weights, then evaluate
+        # once at the start for completeness, accuracies expected to be around
+        # random selection. Note that batch norm moving averages change during
+        # the step but the trainable weights do not.
+        self.estimator.train(
+            input_fn=self.input_train.input_fn,
+            max_steps=1)
+
+        # Random sampling        
+        ranges = [range(i, i+10) for i in range(0, self.max_samples, 10)]
+        evaluation_results = []
+        start_time = time.time() 
+
+        for _range in ranges:
+          tf.reset_default_graph()
+          checkpoint = tf.train.get_checkpoint_state(self.model_dir)
+          evs = self._samp(checkpoint, _range)
+          evaluation_results = evaluation_results + evs
+
+        all_time = time.time() - start_time
+        break     # Break from retry loop on success
+      except VALID_EXCEPTIONS as e:   # pylint: disable=catching-non-exception
+        attempts += 1
+        tf.logging.warning(str(e))
+        if attempts >= self.config['max_attempts']:
+          raise AbortError(str(e))
+
+    metadata = {
+        'trainable_params': _get_param_count(self.model_dir),
+        'prediction_time': all_time,   # includes eval and other metric time
+        'evaluation_results': evaluation_results,
+    }
+    return metadata
