@@ -80,4 +80,4 @@ def random_models(argv):
     
 
 if __name__ == '__main__':
-  app.run(random_models)
+  app.run(single_model)
